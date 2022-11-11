@@ -1,17 +1,14 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.nn import Linear, Conv2d, LayerNorm
 import torch.nn.functional as F
 
-mlp_dim = 768
 
-
-class Mlp(nn.Module):
+class MLP(nn.Module):
     def __init__(self, in_ch):
-        super(Mlp, self).__init__()
-        self.fc1 = Linear(in_ch, mlp_dim)
-        self.fc2 = Linear(mlp_dim, in_ch)
+        super(MLP, self).__init__()
+        self.fc1 = nn.Linear(in_ch, 768)
+        self.fc2 = nn.Linear(768, in_ch)
 
         self.gelu = torch.nn.functional.gelu
         self._init_weights()
@@ -32,37 +29,41 @@ class Mlp(nn.Module):
 class CTM(nn.Module):
     def __init__(self, in_ch, out_ch, scale):
         super(CTM, self).__init__()
-        self.patch_embeddings = Conv2d(in_channels=in_ch,
-                                       out_channels=in_ch,
-                                       kernel_size=int(scale / 16),
-                                       stride=int(scale / 16))
+        self.patch_embeddings = nn.Conv2d(in_channels=in_ch, out_channels=in_ch, 
+                                          kernel_size=int(scale / 16), stride=int(scale / 16))
         self.position_embeddings = nn.Parameter(torch.zeros(1, 256, in_ch))
-        self.atte_norm = LayerNorm(in_ch, eps=1e-6)
+        self.atte_norm = nn.LayerNorm(in_ch, eps=1e-6)
         self.atte = nn.Conv1d(256, 256, kernel_size=5, stride=1, padding=2)
-        self.ffn_norm = LayerNorm(in_ch, eps=1e-6)
-        self.ffn = Mlp(in_ch)
-        self.enco_norm = LayerNorm(in_ch, eps=1e-6)
-        self.conv1d = BaseConv(in_ch, out_ch)
-
-        self.outconv = CNNAttetion(out_ch, out_ch)
+        self.ffn_norm = nn.LayerNorm(in_ch, eps=1e-6)
+        self.ffn = MLP(in_ch)
+        self.enco_norm = nn.LayerNorm(in_ch, eps=1e-6)
+        self.outconv = BaseConv(in_ch, out_ch)
 
     def forward(self, x):
-        x1 = x
-        x1 = self.patch_embeddings(x1).flatten(2)
-        x1 = x1.transpose(-1, -2) + self.position_embeddings
-        hx1 = x1
-        x1 = self.atte(self.atte_norm(x1)) + hx1
-        hx1 = x1
-        x1 = self.ffn(self.ffn_norm(x1)) + hx1
-        x1 = self.enco_norm(x1)
-        B, n_patch, hidden = x1.size()
-        h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
-        x1 = x1.permute(0, 2, 1).contiguous().view(B, hidden, h, w)
-        x1 = self.conv1d(x1)
-        x1 = _upsample_like(x1, x)
 
-        xout = self.outconv(x1)
-        return xout
+        x1 = x
+
+        #  embedding
+        x = self.patch_embeddings(x).flatten(2).transpose(-1, -2) + self.position_embeddings
+
+        #  1D conv
+        hx = x
+        x = self.att(self.atte_norm(x)) + hx
+
+        #  MLP
+        hx = x
+        x = self.ffn(self.ffn_norm(x)) + hx
+
+        #  reshape
+        x = self.enco_norm(x)
+        B, n_patch, hidden = x.size()
+        h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
+        x = x.permute(0, 2, 1).contiguous().view(B, hidden, h, w)
+
+        x = self.outconv(x)
+        x = _upsample_like(x, x1)
+
+        return x
 
 
 class ChannelAttention(nn.Module):
